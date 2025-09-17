@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>OpenSeadragon IIIF Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      html, body { height: 100%; margin: 0; background: #111; }
+      #osd { width: 100%; height: 100%; }
+      #error { position: absolute; top: 0; left: 0; right: 0; padding: 10px; color: #fff; background: #b00020; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; display: none; z-index: 1000; }
+    </style>
+    <!-- OpenSeadragon from official GitHub pages CDN -->
+    <script src="https://openseadragon.github.io/openseadragon/openseadragon.min.js"></script>
+  </head>
+  <body>
+    <div id="error"></div>
+    <div id="osd"></div>
+    <script>
+      (function() {
+        function showError(msg) {
+          var el = document.getElementById('error');
+          el.textContent = msg;
+          el.style.display = 'block';
+        }
+
+        function getParam(name) {
+          var url = new URL(window.location.href);
+          return url.searchParams.get(name);
+        }
+
+        function ensureInfoJson(url) {
+          // If the URL already ends with /info.json, return as-is
+          if (!url) return null;
+          if (url.endsWith("/info.json")) return url;
+          // Some services provide the base service id; append /info.json
+          return url.replace(/\/?$/, "/info.json");
+        }
+
+        function startOSD(infoUrl) {
+          try {
+            window.viewer = OpenSeadragon({
+              id: "osd",
+              prefixUrl: "https://openseadragon.github.io/openseadragon/images/",
+              tileSources: infoUrl,
+              showNavigator: true,
+              visibilityRatio: 1.0,
+              constrainDuringPan: true,
+              maxZoomPixelRatio: 2,
+              timeout: 60000
+            });
+          } catch (e) {
+            showError("OpenSeadragon failed to start: " + e.message);
+          }
+        }
+
+        async function manifestToInfo(manifestUrl) {
+          const res = await fetch(manifestUrl, { mode: "cors" });
+          if (!res.ok) throw new Error("Failed to fetch manifest: " + res.status);
+          const m = await res.json();
+
+          // Try IIIF Presentation 3.0 path:
+          try {
+            // manifest.items[0] -> first canvas
+            // canvas.items[0].items[0].body -> Annotation body (image), may be array
+            const canvas = m.items && m.items[0];
+            if (canvas) {
+              const annPage = canvas.items && canvas.items[0];
+              const ann = annPage && annPage.items && annPage.items[0];
+              const body = ann && (Array.isArray(ann.body) ? ann.body[0] : ann.body);
+              if (body) {
+                let svc = body.service || body.services; // services may be array
+                if (Array.isArray(svc)) svc = svc[0];
+                if (svc && (svc.id || svc['@id'])) {
+                  return ensureInfoJson(svc.id || svc['@id']);
+                }
+              }
+            }
+          } catch (e) { /* fall through to v2 */ }
+
+          // Try IIIF Presentation 2.x path:
+          try {
+            // sequences[0].canvases[0].images[0].resource.service['@id']
+            const seq = m.sequences && m.sequences[0];
+            const canv = seq && seq.canvases && seq.canvases[0];
+            const img = canv && canv.images && canv.images[0];
+            const res2 = img && (img.resource || (img.body && img.body[0]));
+            const svc2 = res2 && (res2.service || (res2.services && res2.services[0]));
+            const id2 = svc2 && (svc2['@id'] || svc2.id);
+            if (id2) return ensureInfoJson(id2);
+          } catch (e) { /* ignore */ }
+
+          throw new Error("Could not locate an Image Service in the manifest");
+        }
+
+        (async function main() {
+          try {
+            const infoParam = getParam("info");
+            const manifestParam = getParam("manifest");
+            if (infoParam) {
+              startOSD(infoParam);
+              return;
+            }
+            if (manifestParam) {
+              const info = await manifestToInfo(manifestParam);
+              startOSD(info);
+              return;
+            }
+            showError("Provide either ?info=<IIIF info.json URL> or ?manifest=<IIIF Presentation URL> in the address bar.");
+          } catch (err) {
+            showError(err.message || String(err));
+          }
+        })();
+      })();
+    </script>
+  </body>
+</html>
